@@ -27,7 +27,8 @@ typedef struct
   int_cb_t          cb;
   struct sf_task_t *next;
   uint8_t           tile_pos;
-  uint8_t           dummy[3];
+  uint8_t           busy;
+  uint8_t           dummy[2];
 } sf_task_t;
 
 static void sf_drp_semInit(void);
@@ -141,7 +142,8 @@ static int32_t sf_task_get(sf_task_t **pTask)
 
   i=0;
   while(1){
-    if(gTask[i].cb==NULL){
+    if(gTask[i].busy==0){
+      gTask[i].busy=1;
       break;
     }
     if(i>=SF_TASK_NUM){
@@ -199,6 +201,7 @@ static int32_t sf_task_dequeue_isr(uint8_t id)
   
   if((*pTaskQueHead)!=NULL){
     pTask = (*pTaskQueHead);
+    pTask->busy=0;
     if(pTask->cb != NULL){
       (pTask->cb)(id);
     }
@@ -261,6 +264,7 @@ int32_t sf_DK2_Initialize(void)
     gTask[i].cb       = NULL;
     gTask[i].next     = NULL;
     gTask[i].tile_pos = 0;
+    gTask[i].busy     = 0;
   }
 
   DRP_IDIF_DMACNTI0 = 0x00040001;
