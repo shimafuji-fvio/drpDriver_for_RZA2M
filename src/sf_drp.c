@@ -1,6 +1,6 @@
 /* ******************************************************************************** *
    Name   : DRP driver for RZ/A2M
-   Date   : 2020.05.08
+   Date   : 2020.05.19
    Auther : Shimafuji Electric inc.
 
    Copyright (C) 2020 Shimafuji Electric inc. All rights reserved.
@@ -19,16 +19,26 @@
 
 #include "sf_drp.h"
 
+#define portCPU_IRQ_DISABLE()                 \
+  __asm volatile ( "CPSID i" ::: "memory" );  \
+  __asm volatile ( "DSB" );                   \
+	__asm volatile ( "ISB" );
+
+#define portCPU_IRQ_ENABLE()                  \
+	__asm volatile ( "CPSIE i" ::: "memory" );  \
+	__asm volatile ( "DSB" );                   \
+	__asm volatile ( "ISB" );
+
 static uint32_t sf_desc[4*4*SF_TASK_NUM] __attribute__ ((aligned(16), section("UNCACHED_BSS")));
 
 typedef struct
 {
-  uint32_t         *desc;
-  int_cb_t          cb;
-  struct sf_task_t *next;
   uint8_t           tile_pos;
   uint8_t           busy;
   uint8_t           dummy[2];
+  uint32_t         *desc;
+  int_cb_t          cb;
+  struct sf_task_t *next;
 } sf_task_t;
 
 static void sf_drp_semInit(void);
@@ -69,9 +79,9 @@ static void sf_drp_semTake(uint8_t tile_pos)
     }
   }
 
-  taskENTER_CRITICAL();
+  portCPU_IRQ_DISABLE();
   sf_drp_sem[tile_pos]--;
-  taskEXIT_CRITICAL();
+  portCPU_IRQ_ENABLE();
   
 }
 
@@ -201,19 +211,21 @@ static int32_t sf_task_dequeue_isr(uint8_t id)
   
   if((*pTaskQueHead)!=NULL){
     pTask = (*pTaskQueHead);
-    pTask->busy=0;
-    if(pTask->cb != NULL){
-      (pTask->cb)(id);
-    }
-    pTask->cb=NULL;
+    
     (*pTaskQueHead) = (sf_task_t *)pTask->next;
     if((*pTaskQueHead) == NULL){
       (*pTaskQueTail) = NULL;
     }
+    
+    if(pTask->cb != NULL){
+      (pTask->cb)(id);
+    }
+    pTask->cb=NULL;
     pTask->next = NULL;
-  }
+    pTask->busy=0;
 
-  sf_drp_semGive_isr(tile_pos);
+    sf_drp_semGive_isr(tile_pos);
+  }
   
   return(0);
 }
@@ -289,8 +301,12 @@ int32_t sf_DK2_Start2(const uint8_t id, const void *const pparam, const uint32_t
   sf_task_t **pTaskQueTail;
   sf_task_t **pTaskQueHead;
 
-  R_DK2_Start_sub(id);
+
   tile_pos = (uint8_t)R_DK2_GetTilePos(id);
+
+  sf_drp_semTake(tile_pos);
+  
+  R_DK2_Start_sub(id);
   shift = 0;
   while (0 == ((id >> shift) & 1)){
     shift++;
@@ -311,15 +327,13 @@ int32_t sf_DK2_Start2(const uint8_t id, const void *const pparam, const uint32_t
   pTask->desc[2]  = size;
   pTask->desc[5]  = 0xF0FF0000+(uint32_t)((0x91+shift)<<8);
   pTask->desc[9]  = paddrEnd;
-
-  pTaskQueHead = &gTaskQueueHead[tile_pos];
-  pTaskQueTail = &gTaskQueueTail[tile_pos];
   R_MMU_VAtoPA((uint32_t)pTask->desc, &paddr);
 
-  sf_drp_semTake(tile_pos);
+  portCPU_IRQ_DISABLE();
   
-  taskENTER_CRITICAL();
- 
+  pTaskQueHead = &gTaskQueueHead[tile_pos];
+  pTaskQueTail = &gTaskQueueTail[tile_pos];
+
   if((*pTaskQueTail)==NULL){
     (*pTaskQueHead) = pTask;
     (*pTaskQueTail) = pTask;
@@ -339,7 +353,7 @@ int32_t sf_DK2_Start2(const uint8_t id, const void *const pparam, const uint32_t
     }
   }
   
-  taskEXIT_CRITICAL();
+  portCPU_IRQ_ENABLE();
 
   if(pint==(int_cb_t)-1){
     while(sf_drp_sem[tile_pos]<2){}
